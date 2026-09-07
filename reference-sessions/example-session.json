@@ -1,0 +1,43 @@
+{
+  "meta": {
+    "driverName": "Example",
+    "driverComments": "Short neutral demonstration session"
+  },
+  "left": [
+    {
+      "stamp": 30000,
+      "message": {
+        "active": true,
+        "volume": 50,
+        "freq": 800,
+        "amType": "sine",
+        "amDepth": 12,
+        "amFreq": 0.5,
+        "fmType": "sine",
+        "fmDepth": 5,
+        "fmFreq": 0.2,
+        "rampTarget": 50,
+        "rampRate": 0
+      }
+    }
+  ],
+  "right": [
+    {
+      "stamp": 30000,
+      "message": {
+        "active": true,
+        "volume": 50,
+        "freq": 850,
+        "amType": "sine",
+        "amDepth": 12,
+        "amFreq": 0.55,
+        "fmType": "sine",
+        "fmDepth": 5,
+        "fmFreq": 0.2,
+        "rampTarget": 50,
+        "rampRate": 0
+      }
+    }
+  ]
+}
+

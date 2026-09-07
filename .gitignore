@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+audio_device.json
+commissioning-results/
+previews/
+*.wav
+*.log
+
+# User-imported sessions may contain personal metadata.
+reference-sessions/*
+!reference-sessions/example-session.json
+

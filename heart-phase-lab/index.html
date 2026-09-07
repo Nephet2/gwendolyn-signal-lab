@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gwendolyn Heart Phase Lab</title>
+<style>
+  :root { font-family: "Segoe UI", Arial, sans-serif; color: #25243a; background: #f6f4fb; }
+  body { margin: 0; }
+  main { max-width: 820px; margin: 0 auto; padding: 24px; }
+  .card { background: white; border: 1px solid #ded9ef; border-radius: 14px; padding: 20px; margin-bottom: 14px; box-shadow: 0 5px 20px #3528660b; }
+  h1 { margin: 0 0 5px; font-size: 26px; }
+  .muted { color: #6f6c7d; }
+  button { font: inherit; font-weight: 650; padding: 10px 15px; border-radius: 8px; border: 1px solid #6657d9; cursor: pointer; }
+  button.primary { color: white; background: #6657d9; }
+  button.secondary { color: #40378a; background: white; }
+  button:disabled { opacity: .45; cursor: default; }
+  .row { display: flex; gap: 9px; flex-wrap: wrap; align-items: center; }
+  .metrics { display: grid; grid-template-columns: repeat(5,1fr); gap: 10px; margin-top: 16px; }
+  .metric { border: 1px solid #e4e0f1; border-radius: 9px; padding: 12px; background: #faf9fd; }
+  .metric b { display: block; color: #706d80; font-size: 12px; margin-bottom: 5px; }
+  .metric span { font-size: 22px; font-weight: 700; }
+  .phase-wrap { display: grid; grid-template-columns: 180px 1fr; gap: 22px; align-items: center; }
+  .dial { width: 170px; height: 170px; border-radius: 50%; position: relative; border: 2px solid #ddd7f3; background: radial-gradient(circle,#fff 54%,#f0edfb 55%); }
+  .hand { position: absolute; left: 83px; top: 15px; width: 4px; height: 70px; border-radius: 3px; background: #6657d9; transform-origin: 2px 70px; }
+  .heart { position: absolute; inset: 0; display: grid; place-items: center; font-size: 40px; color: #b23a65; transform: scale(1); }
+  .heart.beat { animation: beat .24s ease-out; }
+  @keyframes beat { 0% { transform: scale(1.35); } 100% { transform: scale(1); } }
+  .track { height: 22px; border-radius: 11px; background: #ece9f7; overflow: hidden; margin: 10px 0; }
+  .fill { height: 100%; width: 0%; background: linear-gradient(90deg,#6657d9,#b23a65); }
+  select { font: inherit; padding: 8px; border: 1px solid #bdb6df; border-radius: 7px; background: white; }
+  .pace-flash { display:inline-block; width:12px; height:12px; border-radius:50%; background:#aaa3c8; margin-right:6px; vertical-align:-1px; }
+  .pace-flash.beat { animation: pacebeat .3s ease-out; }
+  @keyframes pacebeat { 0% { background:#b23a65; transform:scale(1.8); } 100% { background:#aaa3c8; transform:scale(1); } }
+  .notice { margin-top: 12px; padding: 10px; border-radius: 8px; background: #f1eefc; white-space: pre-wrap; }
+  .good { background: #e8f5eb; color: #25683a; }
+  .warn { background: #fff2df; color: #80551d; }
+  @media(max-width:750px){.metrics{grid-template-columns:1fr 1fr}.phase-wrap{grid-template-columns:1fr}.dial{margin:auto}}
+</style>
+</head>
+<body>
+<main>
+  <section class="card">
+    <h1>Gwendolyn Heart Phase Lab</h1>
+    <div class="muted">v0.46.4 telemetry bridge · H6M phase commissioning · tempo data may be observed by Vector or Signal Lab; this page has no physical output.</div>
+    <div class="row" style="margin-top:16px">
+      <button id="connect" class="primary">Connect chest strap</button>
+      <button id="disconnect" class="secondary" disabled>Disconnect</button>
+    </div>
+    <div id="status" class="notice">Waiting for Chrome Bluetooth permission.</div>
+    <div class="metrics">
+      <div class="metric"><b>Heart rate</b><span id="bpm">—</span> bpm</div>
+      <div class="metric"><b>5-second average</b><span id="averageBpm">—</span> bpm</div>
+      <div class="metric"><b>RR interval</b><span id="rr">—</span> ms</div>
+      <div class="metric"><b>Phase</b><span id="phase">—</span></div>
+      <div class="metric"><b>Phase confidence</b><span id="confidence">0</span>%</div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2 style="margin-top:0">Commissioning evidence</h2>
+    <div class="muted">The newest raw Bluetooth measurements. BPM and RR must agree before phase timing is trusted.</div>
+    <div id="coherence" class="notice">Waiting for measurements.</div>
+    <pre id="packets" style="margin:12px 0 0;min-height:100px;max-height:230px;overflow:auto;background:#171622;color:#e9e6f5;border-radius:8px;padding:11px;font:12px/1.5 Consolas,monospace;white-space:pre-wrap"></pre>
+  </section>
+
+  <section class="card phase-wrap">
+    <div class="dial"><div id="hand" class="hand"></div><div id="heart" class="heart">♥</div></div>
+    <div>
+      <h2 style="margin-top:0">Heart phase</h2>
+      <div class="muted">The dial advances through the estimated cardiac interval. Each genuine RR beat resets this phase to zero.</div>
+      <div style="margin-top:14px"><b>Continuous signal phase</b></div>
+      <div class="track"><div id="fill" class="fill"></div></div>
+      <div class="row"><b>Visual pacing mode</b><select id="paceMode"><option value="2">Escalation · HR ×2 (200%)</option><option value="1">Match · 100% of heart tempo</option><option value="0.95">Relief · 95% of heart tempo</option><option value="0.9" selected>Relief · 90% of heart tempo</option><option value="0.85">Relief · 85% of heart tempo</option><option value="0.8">Relief · 80% of heart tempo</option></select></div>
+      <div style="margin-top:10px"><span id="paceFlash" class="pace-flash"></span><b>Simulated signal:</b> <span id="pace">waiting</span></div>
+      <div><b>Sinusoidal movement:</b> <span id="signalPosition">—</span>% of peak</div>
+      <div><b>Gwendolyn consumers:</b> <span id="signalLabBridge">not checked</span></div>
+      <div class="muted" style="margin-top:6px">The visible bar rises to a peak and falls to its trough. Its internal phase never resets on a heartbeat; only its continuous speed glides toward the heart-rate-derived target.</div>
+      <div class="muted" style="margin-top:8px">Visual commissioning only. Bluetooth timing and missed-beat behaviour must be validated before any later integration.</div>
+    </div>
+  </section>
+</main>
+<script>
+const HEART_RATE_SERVICE="heart_rate";
+const HEART_RATE_MEASUREMENT="heart_rate_measurement";
+const connectButton=document.querySelector("#connect");
+const disconnectButton=document.querySelector("#disconnect");
+const statusBox=document.querySelector("#status");
+const bpmEl=document.querySelector("#bpm");
+const averageBpmEl=document.querySelector("#averageBpm");
+const rrEl=document.querySelector("#rr");
+const phaseEl=document.querySelector("#phase");
+const confidenceEl=document.querySelector("#confidence");
+const hand=document.querySelector("#hand");
+const fill=document.querySelector("#fill");
+const heart=document.querySelector("#heart");
+const pace=document.querySelector("#pace");
+const paceMode=document.querySelector("#paceMode");
+const paceFlash=document.querySelector("#paceFlash");
+const signalPosition=document.querySelector("#signalPosition");
+const signalLabBridge=document.querySelector("#signalLabBridge");
+const coherenceEl=document.querySelector("#coherence");
+const packetsEl=document.querySelector("#packets");
+let device=null,characteristic=null,lastBeatAt=0,intervalMs=0,lastPacketAt=0,rrHistory=[],bpmSamples=[],beatCount=0,rollingBpm=0;
+let packetHistory=[];
+let signalPhase=0,lastSignalPhase=0,currentSignalCpm=0,lastAnimationAt=0,phaseLockValid=false;
+let phaseConfidence=0;
+
+function setStatus(text,kind=""){
+  statusBox.textContent=text;statusBox.className=`notice ${kind}`;
+}
+function pulse(){
+  heart.classList.remove("beat");void heart.offsetWidth;heart.classList.add("beat");
+}
+async function publishHeartTempo(){
+  if(!rollingBpm)return;
+  const payload={bpm:rollingBpm,ratio:Number(paceMode.value),confidence:phaseConfidence};
+  let signalLabResult=null,vectorResult=null;
+  try{
+    const response=await fetch("http://127.0.0.1:18766/v1/heart-tempo",{
+      method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload)
+    });
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    signalLabResult=await response.json();
+  }catch(_){}
+  try{
+    const response=await fetch("http://127.0.0.1:18767/v1/heart-tempo",{
+      method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)
+    });
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    vectorResult=await response.json();
+  }catch(_){}
+  const target=(vectorResult||signalLabResult)?.target_cpm;
+  if(vectorResult&&signalLabResult)signalLabBridge.textContent=`observed by Vector + Signal Lab · ${target.toFixed(1)} cycles/min`;
+  else if(vectorResult)signalLabBridge.textContent=`observed by Vector · ${target.toFixed(1)} cycles/min · applies during generated autonomous motion`;
+  else if(signalLabResult)signalLabBridge.textContent=`observed by Signal Lab · ${target.toFixed(1)} cycles/min`;
+  else signalLabBridge.textContent="No Gwendolyn consumer available — visual commissioning continues";
+}
+function parseHeartRate(event){
+  const value=event.target.value;
+  const flags=value.getUint8(0);
+  let offset=1;
+  const bpm=(flags&1)?value.getUint16(offset,true):value.getUint8(offset);
+  offset+=(flags&1)?2:1;
+  if(flags&8)offset+=2;
+  const receivedAt=performance.now();
+  bpmSamples.push({time:receivedAt,bpm});
+  bpmSamples=bpmSamples.filter(sample=>receivedAt-sample.time<=5000);
+  rollingBpm=bpmSamples.reduce((sum,sample)=>sum+sample.bpm,0)/bpmSamples.length;
+  const rrValues=[];
+  if(flags&16){
+    while(offset+1<value.byteLength){
+      rrValues.push(value.getUint16(offset,true)*1000/1024);
+      offset+=2;
+    }
+  }
+  lastPacketAt=receivedAt;
+  const candidate=rrValues.length?rrValues[rrValues.length-1]:0;
+  if(candidate>=250&&candidate<=2000){
+    rrHistory.push(candidate);if(rrHistory.length>8)rrHistory.shift();
+    const sorted=[...rrHistory].sort((a,b)=>a-b);
+    intervalMs=sorted[Math.floor(sorted.length/2)];
+    if(rrValues.length){lastBeatAt=receivedAt;beatCount+=rrValues.length;}
+  }
+  bpmEl.textContent=String(bpm);
+  averageBpmEl.textContent=rollingBpm.toFixed(1);
+  rrEl.textContent=intervalMs?intervalMs.toFixed(0):"—";
+  const expectedMs=60000/bpm;
+  const disagreement=intervalMs?Math.abs(intervalMs-expectedMs)/expectedMs:1;
+  const spread=rrHistory.length>2?Math.max(...rrHistory)-Math.min(...rrHistory):999;
+  const stabilityScore=rrHistory.length/6*55+(spread<180?25:spread<350?12:0);
+  const agreementScore=disagreement<.08?20:disagreement<.15?10:disagreement<.25?4:0;
+  let confidence=Math.max(0,Math.min(100,Math.round(stabilityScore+agreementScore)));
+  // Stable nonsense is still nonsense: phase confidence requires agreement
+  // between the displayed BPM and the beat-to-beat RR interval.
+  if(disagreement>=.25)confidence=Math.min(confidence,15);
+  else if(disagreement>=.20)confidence=Math.min(confidence,30);
+  else if(disagreement>=.15)confidence=Math.min(confidence,55);
+  confidenceEl.textContent=String(confidence);
+  phaseConfidence=confidence;
+  const coherent=disagreement<.20;
+  phaseLockValid=coherent&&Boolean(lastBeatAt);
+  coherenceEl.textContent=`BPM implies ${expectedMs.toFixed(0)} ms · filtered RR ${intervalMs?intervalMs.toFixed(0):"—"} ms · difference ${(disagreement*100).toFixed(1)}%`;
+  coherenceEl.className=`notice ${coherent?"good":"warn"}`;
+  const raw=Array.from(new Uint8Array(value.buffer,value.byteOffset,value.byteLength),byte=>byte.toString(16).padStart(2,"0")).join(" ");
+  packetHistory.unshift(`${new Date().toLocaleTimeString()}  flags=0x${flags.toString(16).padStart(2,"0")}  bpm=${bpm}  rr=[${rrValues.map(x=>x.toFixed(1)).join(", ")||"none"}]  raw=${raw}`);
+  packetHistory=packetHistory.slice(0,12);packetsEl.textContent=packetHistory.join("\n");
+  setStatus(`Connected to ${device?.name||"heart-rate sensor"} · ${rrValues.length?(coherent?"RR timing coherent":"RR timing received; agreement check pending"):"BPM received; waiting for RR timing"}`,coherent?"good":"warn");
+  pulse();
+  publishHeartTempo();
+}
+function onDisconnected(){
+  characteristic=null;lastBeatAt=0;intervalMs=0;lastPacketAt=0;rrHistory=[];bpmSamples=[];beatCount=0;rollingBpm=0;phaseLockValid=false;packetHistory=[];packetsEl.textContent="";
+  connectButton.disabled=false;disconnectButton.disabled=true;
+  setStatus("Heart-rate sensor disconnected.","warn");
+}
+async function connect(){
+  if(!navigator.bluetooth){setStatus("Web Bluetooth is unavailable. Open this page in Chrome.","warn");return;}
+  try{
+    device=await navigator.bluetooth.requestDevice({filters:[{services:[HEART_RATE_SERVICE]}]});
+    device.addEventListener("gattserverdisconnected",onDisconnected);
+    const server=await device.gatt.connect();
+    const service=await server.getPrimaryService(HEART_RATE_SERVICE);
+    characteristic=await service.getCharacteristic(HEART_RATE_MEASUREMENT);
+    await characteristic.startNotifications();
+    characteristic.addEventListener("characteristicvaluechanged",parseHeartRate);
+    connectButton.disabled=true;disconnectButton.disabled=false;
+    setStatus(`Connected to ${device.name||"heart-rate sensor"} · waiting for first beat…`,"good");
+  }catch(error){setStatus(`Connection failed: ${error.message}`,"warn");}
+}
+function disconnect(){if(device?.gatt?.connected)device.gatt.disconnect();else onDisconnected();}
+function animate(now){
+  const elapsedMs=lastAnimationAt?Math.min(100,now-lastAnimationAt):0;
+  lastAnimationAt=now;
+  let heartPhase=0;
+  const fresh=lastPacketAt&&now-lastPacketAt<=3000;
+  if(lastBeatAt&&intervalMs){heartPhase=Math.max(0,Math.min(1,(now-lastBeatAt)/intervalMs));}
+  const ratio=Number(paceMode.value);
+  const targetCpm=fresh&&phaseLockValid?rollingBpm*ratio:0;
+  if(targetCpm>0){
+    // Three-second tempo settling: speed changes smoothly while phase remains continuous.
+    currentSignalCpm+=(targetCpm-currentSignalCpm)*Math.min(1,elapsedMs/3000);
+    signalPhase=(signalPhase+elapsedMs*currentSignalCpm/60000)%1;
+  }
+  const sinusoidalPosition=(1-Math.cos(2*Math.PI*signalPhase))/2;
+  hand.style.transform=`rotate(${heartPhase*360}deg)`;
+  fill.style.width=`${sinusoidalPosition*100}%`;
+  signalPosition.textContent=(sinusoidalPosition*100).toFixed(0);
+  phaseEl.textContent=lastBeatAt?heartPhase.toFixed(2):"—";
+  if(signalPhase<lastSignalPhase-.4&&fresh){paceFlash.classList.remove("beat");void paceFlash.offsetWidth;paceFlash.classList.add("beat");}
+  lastSignalPhase=signalPhase;
+  if(targetCpm>0){pace.textContent=`${currentSignalCpm.toFixed(1)} cycles/min → target ${targetCpm.toFixed(1)} · ${(ratio*100).toFixed(0)}% of heart tempo`;}
+  else if(lastPacketAt){confidenceEl.textContent="0";pace.textContent="heart lock unavailable — visual signal phase held";}
+  requestAnimationFrame(animate);
+}
+connectButton.addEventListener("click",connect);
+disconnectButton.addEventListener("click",disconnect);
+paceMode.addEventListener("change",publishHeartTempo);
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>
