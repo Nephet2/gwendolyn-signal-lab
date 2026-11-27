@@ -6,11 +6,15 @@ import wave
 from typing import Any, Callable
 
 from .synth import render_states_continuous
+from .pressure_control import PressureControl
+from .funscript_balance import scale_stereo
 
 
 MONITOR_GAIN = 0.10
 MONITOR_MAX_GAIN = 0.50
 MONITOR_BLOCK_SECONDS = 0.10
+MONITOR_SAMPLE_RATE = 44100
+MONITOR_STREAM_LATENCY = "high"
 
 # Human operators normally alter one perceptual dimension, listen briefly, then
 # move to the next. Keep intensity last so character changes can settle before
@@ -94,7 +98,9 @@ class HeadphoneMonitor:
 
     def __init__(self) -> None:
         self.armed = False
+        self.pressure_control = PressureControl()
         self.last_error = ""
+        self.underflow_count = 0
         self._lock = RLock()
         self._generation = 0
         self._left: dict = {}
@@ -104,18 +110,24 @@ class HeadphoneMonitor:
         self._plan: list[tuple[dict, dict]] = []
         self._paused = True
         self._gain = MONITOR_GAIN
+        self._balance = (1.0, 1.0)
+        self._analyser_blocks: tuple[bytes, ...] = ()
 
     def arm(self, device_index: int, device_name: str, left: dict, right: dict, *,
             gain: float = MONITOR_GAIN, start_paused: bool = True) -> None:
+        self.pressure_control.target()
+        if self.pressure_control.fault: raise MonitorError(self.pressure_control.fault)
         validate_output_device(device_index, device_name)
         with self._lock:
             self.armed = True
             self.last_error = ""
+            self.underflow_count = 0
             self._left, self._right = dict(left), dict(right)
             self._target_left, self._target_right = dict(left), dict(right)
             self._plan = []
             self._paused = bool(start_paused)
             self._gain = min(MONITOR_MAX_GAIN, max(0.0, float(gain)))
+            self._analyser_blocks = ()
             self._generation += 1
             generation = self._generation
 
@@ -125,7 +137,9 @@ class HeadphoneMonitor:
                 device = validate_output_device(device_index, device_name, sd.query_devices)
                 phase_state: dict[str, dict[str, float]] = {}
                 output_gain = 0.0
-                with sd.RawOutputStream(samplerate=44100, channels=2, dtype="int16", device=device) as stream:
+                output_balance = (1.0, 1.0)
+                with sd.RawOutputStream(samplerate=MONITOR_SAMPLE_RATE, channels=2, dtype="int16", device=device,
+                                        latency=MONITOR_STREAM_LATENCY) as stream:
                     while True:
                         with self._lock:
                             if not self.armed or generation != self._generation:
@@ -133,22 +147,35 @@ class HeadphoneMonitor:
                             if self._plan:
                                 self._left, self._right = self._plan.pop(0)
                             left_state, right_state = dict(self._left), dict(self._right)
-                            target_gain = 0.0 if self._paused else self._gain
+                            paused = self._paused
+                            target_gain = 0.0 if paused else self._gain
+                            balance = self._balance
                         payload = render_states_continuous(
                             left_state, right_state, phase_state=phase_state,
                             duration_s=MONITOR_BLOCK_SECONDS,
-                            sample_rate=44100, preview_gain=target_gain,
+                            sample_rate=MONITOR_SAMPLE_RATE, preview_gain=target_gain,
                             start_preview_gain=output_gain,
                         )
                         output_gain = target_gain
                         with wave.open(BytesIO(payload), "rb") as wav:
                             frames = wav.readframes(wav.getnframes())
-                        stream.write(frames)
+                        frames = scale_stereo(frames, output_balance, balance)
+                        output_balance = balance
+                        frames = self.pressure_control.pcm16(frames)
+                        underflowed = stream.write(frames)
+                        with self._lock:
+                            if generation != self._generation:
+                                return
+                            if underflowed:
+                                self.underflow_count += 1
+                            if not paused and not self._paused:
+                                self._analyser_blocks = (*self._analyser_blocks[-1:], frames)
             except Exception as exc:
                 with self._lock:
-                    self.last_error = str(exc)
                     if generation == self._generation:
+                        self.last_error = str(exc)
                         self.armed = False
+                        self._analyser_blocks = ()
 
         Thread(target=worker, name="signal-lab-continuous-monitor", daemon=True).start()
 
@@ -166,9 +193,19 @@ class HeadphoneMonitor:
         with self._lock:
             self._gain = min(MONITOR_MAX_GAIN, max(0.0, float(gain)))
 
+    def set_balance(self, balance: tuple[float, float]) -> None:
+        with self._lock:
+            self._balance = balance
+
+    def analyser_snapshot(self) -> tuple[bytes, int] | None:
+        with self._lock:
+            blocks = self._analyser_blocks
+        return (b"".join(blocks), MONITOR_SAMPLE_RATE) if blocks else None
+
     def pause(self) -> None:
         with self._lock:
             self._paused = True
+            self._analyser_blocks = ()
 
     def resume(self) -> None:
         with self._lock:
@@ -178,9 +215,11 @@ class HeadphoneMonitor:
     def status(self) -> dict[str, float | bool]:
         with self._lock:
             return {
+                "pressure_control": self.pressure_control.snapshot(),
                 "armed": bool(self.armed),
                 "paused": bool(self._paused),
                 "audible": bool(self.armed and not self._paused and self._gain > 0),
+                "underflow_count": self.underflow_count,
                 "gain_percent": round(self._gain * 100.0, 1),
             }
 
@@ -190,6 +229,7 @@ class HeadphoneMonitor:
             self._paused = True
             self._generation += 1
             self._plan = []
+            self._analyser_blocks = ()
 
     def stop(self) -> None:
         self.disarm()
