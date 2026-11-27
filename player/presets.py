@@ -116,6 +116,10 @@ class PresetStore:
         with self._lock:
             return list(self._presets)
 
+    def catalog(self) -> dict[str, SignalPreset]:
+        with self._lock:
+            return dict(self._presets)
+
     def active(self) -> SignalPreset:
         with self._lock:
             return self._presets[self._active]

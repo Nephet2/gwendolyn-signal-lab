@@ -11,10 +11,12 @@ from urllib.parse import urlparse
 
 from .perceptual import analyse_pair, semantic_state
 from .presets import PresetStore
+from .modulation import SourceModulation
+from .texture_modes import LEVEL_BAND_PERCENT
 
 
 BRIDGE_HOST = "127.0.0.1"
-BRIDGE_PORT = 18766
+BRIDGE_PORT = 18786
 SEMANTIC_KEYS = ("intensity", "texture", "vibration_rate", "vibration_depth")
 OPTIONAL_SEMANTIC_KEYS = ("secondary_rate", "secondary_depth", "modulation")
 HEART_TEMPO_ORIGIN = "http://127.0.0.1:8766"
@@ -115,10 +117,13 @@ class DirectorState:
             "active": False, "target": None, "mode": "off", "ratio": None,
             "requested_at": 0.0,
         }
+        self.modulation = SourceModulation()
         self.events: Queue[dict[str, Any]] = Queue()
         self.preset_store = preset_store or PresetStore()
 
     def apply(self, payload: Any) -> dict[str, Any]:
+        if self.modulation.active:
+            raise CommandError("End autonomous modulation before replacing the source")
         command = validate_command(payload, self.preset_store)
         with self._lock:
             self._last = command
@@ -126,7 +131,30 @@ class DirectorState:
         self.events.put({"type": "command", **result})
         return result
 
+    def modulation_start(self) -> dict:
+        with self._lock:
+            live = dict(self._live)
+        if (live.get("source") != "reference_session" or not live.get("playing")
+                or not (live.get("headphone_monitor") or {}).get("audible")):
+            raise CommandError("Start audible JSON playback before arming modulation")
+        self.modulation.arm(live["left_signal"], live["right_signal"], self.preset_store.active())
+        return {"ok": True, "modulation": self.modulation.snapshot()}
+
+    def modulation_command(self, payload) -> dict:
+        if not isinstance(payload, dict):
+            raise CommandError("Modulation command must be an object")
+        with self._lock:
+            live = dict(self._live)
+        if not live.get('playing') or live.get('source') != 'reference_session' or not (live.get('headphone_monitor') or {}).get('audible'):
+            raise CommandError('Modulation changes require audible JSON playback')
+        try:
+            status = self.modulation.command(payload, self.preset_store.catalog())
+        except (ValueError, TypeError) as exc:
+            raise CommandError(str(exc)) from exc
+        return {"ok": True, "modulation": status}
+
     def neutral(self, reason: str = "Local neutral") -> dict[str, Any]:
+        self.modulation.stop()
         with self._lock:
             previous = self._last
             self._last = None
@@ -140,11 +168,42 @@ class DirectorState:
         self.events.put({"type": "neutral", **result})
         return result
 
+    def level(self, payload: Any) -> dict[str, Any]:
+        """Request a level-only change inside Gwendolyn's band (percent from the baseline)."""
+        if not isinstance(payload, dict):
+            raise CommandError("Level must be a JSON object")
+        with self._lock:
+            band = dict(self._live.get("level_band") or {})
+        if not band.get("enabled"):
+            raise CommandError("Gwendolyn level control is off in the trial window")
+        offsets = {}
+        for lane in ("left", "right"):
+            raw = payload.get(lane, payload.get("both"))
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise CommandError(f"{lane} must be a level offset in percent")
+            if not -LEVEL_BAND_PERCENT <= float(raw) <= LEVEL_BAND_PERCENT:
+                raise CommandError(f"{lane} must be within {LEVEL_BAND_PERCENT:g}% of the baseline")
+            offsets[lane] = round(float(raw), 3)
+        transition = payload.get("transition_seconds", 1.0)
+        if isinstance(transition, bool) or not isinstance(transition, (int, float)) or not 0.2 <= float(transition) <= 5.0:
+            raise CommandError("transition_seconds must be between 0.2 and 5")
+        hold = payload.get("hold")
+        if hold is not None and not isinstance(hold, bool):
+            raise CommandError("hold must be true or false")
+        request_id = str(payload.get("request_id") or f"level-{time.time_ns()}")[:100]
+        result = {"ok": True, "status": "level_requested", "request_id": request_id,
+                  "left": offsets["left"], "right": offsets["right"], "transition_seconds": float(transition),
+                  "hold": hold}
+        self.events.put({"type": "level", **result})
+        return result
+
     def update_live(self, payload: dict[str, Any]) -> None:
         """Publish operator-owned playback and monitor telemetry to read clients."""
         allowed = {
             "source", "session", "position_ms", "duration_ms", "playing",
-            "left_signal", "right_signal", "headphone_monitor",
+            "left_signal", "right_signal", "headphone_monitor", "ready_for_first_texture",
+            "director_texture_request_id", "texture_only_level", "reference_receipt", "monitor_state",
+            "level_band",
         }
         clean = {key: payload.get(key) for key in allowed if key in payload}
         clean["updated_at"] = time.time()
@@ -225,6 +284,8 @@ class DirectorState:
             "audio_enabled": False,
             "physical_output_enabled": False,
             "live": live,
+            "modulation": self.modulation.snapshot(),
+            "available_presets": list(self.preset_store.catalog()),
             "heart_tempo": heart_tempo,
             "heart_tempo_control": heart_tempo_control,
             "last_command": last,
@@ -277,8 +338,28 @@ def _handler(state: DirectorState):
             try:
                 payload = self._body()
                 path = urlparse(self.path).path
-                if path == "/v1/director/command":
+                if path == "/v1/modulation/start":
+                    self._send(200, state.modulation_start())
+                elif path == "/v1/modulation/command":
+                    self._send(200, state.modulation_command(payload))
+                elif path == "/v1/modulation/stop":
+                    self._send(200, {"ok": True, "modulation": state.modulation.stop()})
+                elif path == "/v1/director/command":
                     self._send(200, state.apply(payload))
+                elif path == "/v1/director/reference/reserve":
+                    rotation = getattr(state, "reference_rotation", None)
+                    self._send(200, rotation.reserve() if rotation else {"ok": False, "error": "rotation_disabled"})
+                elif path == "/v1/director/reference/commit":
+                    rotation = getattr(state, "reference_rotation", None)
+                    token = payload.get("token") if isinstance(payload, dict) else None
+                    live = state.snapshot().get("live") or {}
+                    choice = rotation.commit(token) if rotation and live.get("playing") else None
+                    if choice:
+                        lane, session = choice
+                        state.events.put({"type": "reference_texture", "lane": lane, "session": session, "token": token})
+                    self._send(200, {"ok": bool(choice)})
+                elif path == "/v1/director/level":
+                    self._send(200, state.level(payload))
                 elif path == "/v1/director/neutral":
                     reason = payload.get("reason", "Local neutral") if isinstance(payload, dict) else "Local neutral"
                     self._send(200, state.neutral(reason))
@@ -331,3 +412,5 @@ class DirectorBridge:
         self.server.server_close()
         if self.thread.is_alive():
             self.thread.join(timeout=2)
+
+

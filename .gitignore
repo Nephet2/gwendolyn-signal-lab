@@ -3,13 +3,19 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-audio_device.json
+dist/
 commissioning-results/
 previews/
 *.wav
 *.log
 
+# Personal state written by the app.
+audio_device.json
+output_settings.json
+crossover_profiles.json
+civet-pressure.json
+
 # User-imported sessions may contain personal metadata.
 reference-sessions/*
 !reference-sessions/example-session.json
-
+!reference-sessions/Balance-Demo.funscript
